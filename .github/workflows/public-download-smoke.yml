@@ -1,0 +1,34 @@
+name: Public download smoke test
+
+on:
+  push:
+    paths:
+      - ".github/workflows/public-download-smoke.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  download:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Download public APK ZIP DYN links without credentials and verify SHA-256
+        shell: bash
+        env:
+          BASE: https://github.com/jebinc324/J-Apps-Releases/releases/download/just24-public-v1/
+        run: |
+          set -euo pipefail
+          curl -fsSL --retry 3 --max-time 120 "${BASE}family-parameter-manager.dyn" -o "$RUNNER_TEMP/family-parameter-manager.dyn"
+          echo "7c21b1b25b90ab63f83f418b663917634afcc6bd4a8b5104b625cb523ee6c67e  $RUNNER_TEMP/family-parameter-manager.dyn" | sha256sum --check --status
+          echo "Public download verified: family-parameter-manager.dyn"
+          curl -fsSL --retry 3 --max-time 120 "${BASE}j-share-v0.4.1.apk" -o "$RUNNER_TEMP/j-share-v0.4.1.apk"
+          echo "c7310bfeffd8f27929ed3c29d5da319239b2de152d120446bced701f8d9c31ab  $RUNNER_TEMP/j-share-v0.4.1.apk" | sha256sum --check --status
+          echo "Public download verified: j-share-v0.4.1.apk"
+          curl -fsSL --retry 3 --max-time 120 "${BASE}j-section-box-orient-to-face.zip" -o "$RUNNER_TEMP/j-section-box-orient-to-face.zip"
+          echo "29d9c1538b6fff9c4f4357c033cf24c473e59e8ec18f0729fc79194194c5514f  $RUNNER_TEMP/j-section-box-orient-to-face.zip" | sha256sum --check --status
+          echo "Public download verified: j-section-box-orient-to-face.zip"
+          curl -fsSL --retry 3 --max-time 120 "${BASE}j-expense-tracker-my-expense-tracker-v3.2.16.apk" -o "$RUNNER_TEMP/j-expense-tracker-my-expense-tracker-v3.2.16.apk"
+          echo "fcdd93d431c505852e5371dfc5f0d051c7b1ae5b46ffb85899b6a16ccd55d07a  $RUNNER_TEMP/j-expense-tracker-my-expense-tracker-v3.2.16.apk" | sha256sum --check --status
+          echo "Public download verified: j-expense-tracker-my-expense-tracker-v3.2.16.apk"
