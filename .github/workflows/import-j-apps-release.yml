@@ -1,0 +1,135 @@
+name: Import verified public J Apps release
+# Copy this file to .github/workflows/import-j-apps-release.yml in the NEW
+# PUBLIC jebinc324/J-Apps-Releases repository, never the website repository.
+on:
+  push:
+    paths:
+      - ".github/workflows/import-j-apps-release.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: import-public-release
+  cancel-in-progress: false
+
+jobs:
+  mirror:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    env:
+      GH_TOKEN: ${{ github.token }}
+      SRC_REPO: jebinc324/J-Digital-Hub
+      DEST_REPO: jebinc324/J-Apps-Releases
+      RELEASE_TAG: just24-public-v1
+    steps:
+      - name: Ensure workflow is running in correct public destination
+        shell: bash
+        run: |
+          set -euo pipefail
+          [ "$GITHUB_REPOSITORY" = "$DEST_REPO" ] || { echo "Wrong destination repo"; exit 1; }
+          [ "$(gh api "repos/$DEST_REPO" --jq .private)" = "false" ] || { echo "Destination must be public"; exit 1; }
+
+      - name: Fetch source inventory and download every file
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/j-apps-assets"
+          curl -fsSL --retry 3 \
+            "https://raw.githubusercontent.com/$SRC_REPO/main/docs/migration/source-release-assets-2026-11-26.json" \
+            -o "$RUNNER_TEMP/expected.json"
+          gh api "repos/$SRC_REPO/releases/tags/$RELEASE_TAG" > "$RUNNER_TEMP/source.json"
+          gh release download "$RELEASE_TAG" \
+            --repo "$SRC_REPO" --dir "$RUNNER_TEMP/j-apps-assets"
+
+      - name: Validate original filenames, sizes and SHA-256 before upload
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - "$RUNNER_TEMP/expected.json" "$RUNNER_TEMP/source.json" "$RUNNER_TEMP/j-apps-assets" <<'PY'
+          import hashlib
+          import json
+          from pathlib import Path
+          import sys
+
+          expected = json.loads(Path(sys.argv[1]).read_text())
+          source = json.loads(Path(sys.argv[2]).read_text())
+          folder = Path(sys.argv[3])
+          assert expected["sourceReleaseTag"] == "just24-public-v1"
+          expected_map = {a["name"]: a for a in expected["assets"]}
+          src_map = {a["name"]: a for a in source["assets"]}
+          downloaded = {p.name: p for p in folder.iterdir() if p.is_file()}
+          assert expected["assetCount"] == len(expected_map) == len(src_map) == len(downloaded) == 57, "Asset count changed"
+          assert set(expected_map) == set(src_map) == set(downloaded), "Asset filenames differ"
+          for name, e in expected_map.items():
+              a = src_map[name]
+              assert a["size"] == e["sizeBytes"] and a["digest"] == "sha256:" + e["sha256"], f"Source metadata changed: {name}"
+              sha = hashlib.sha256()
+              with downloaded[name].open("rb") as stream:
+                  for chunk in iter(lambda: stream.read(4 * 1024 * 1024), b""):
+                      sha.update(chunk)
+              assert downloaded[name].stat().st_size == e["sizeBytes"], f"Size mismatch: {name}"
+              assert sha.hexdigest() == e["sha256"], f"Hash mismatch: {name}"
+          print("All 57 original assets validated against pinned inventory.")
+          PY
+
+      - name: Create or resume a DRAFT release
+        shell: bash
+        run: |
+          set -euo pipefail
+          if gh release view "$RELEASE_TAG" --repo "$DEST_REPO" --json isDraft > "$RUNNER_TEMP/existing-release.json" 2>/dev/null; then
+            [ "$(gh release view "$RELEASE_TAG" --repo "$DEST_REPO" --json isDraft --jq .isDraft)" = "true" ] || {
+              echo "Destination already has a published release. Refusing to overwrite it."; exit 1;
+            }
+          else
+            gh release create "$RELEASE_TAG" --repo "$DEST_REPO" \
+              --title "J Apps public downloads" --draft \
+              --notes "Public download files for https://just24things.online/. File hashes checked during import. APK signing, installation, security and compatibility are not independently certified."
+          fi
+
+      - name: Upload all 57 original assets to DRAFT
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh release upload "$RELEASE_TAG" "$RUNNER_TEMP"/j-apps-assets/* \
+            --repo "$DEST_REPO" --clobber
+
+      - name: Verify destination release before publishing
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh api "repos/$DEST_REPO/releases/tags/$RELEASE_TAG" > "$RUNNER_TEMP/destination.json"
+          python3 - "$RUNNER_TEMP/expected.json" "$RUNNER_TEMP/destination.json" <<'PY'
+          import json
+          from pathlib import Path
+          import sys
+          expected = json.loads(Path(sys.argv[1]).read_text())
+          dest = json.loads(Path(sys.argv[2]).read_text())
+          assets = {a["name"]: a for a in dest["assets"]}
+          assert dest["draft"] is True, "Expected draft"
+          assert len(assets) == expected["assetCount"] == 57, "Missing destination files"
+          assert set(assets) == {a["name"] for a in expected["assets"]}, "Unexpected destination files"
+          for a in expected["assets"]:
+              d = assets[a["name"]]
+              assert d["size"] == a["sizeBytes"], f"Wrong size: {a['name']}"
+              assert d.get("digest") == "sha256:" + a["sha256"], f"Wrong hash: {a['name']}"
+          print("Destination release metadata exactly matches 57 verified assets.")
+          PY
+
+      - name: Publish verified release
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh release edit "$RELEASE_TAG" --repo "$DEST_REPO" --draft=false
+          curl -fsSL --retry 3 "https://api.github.com/repos/$DEST_REPO/releases/tags/$RELEASE_TAG" \
+            -o "$RUNNER_TEMP/public-release.json"
+          python3 - "$RUNNER_TEMP/public-release.json" <<'PY'
+          import json
+          from pathlib import Path
+          import sys
+          data = json.loads(Path(sys.argv[1]).read_text())
+          assert data["draft"] is False
+          assert len(data.get("assets", [])) == 57
+          print("Public release published with 57 assets.")
+          PY
